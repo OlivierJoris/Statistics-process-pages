@@ -112,14 +112,14 @@ to obtain the physical address corresponding to a given logical address using mu
 Moreover, the offset of the logical address is retained according to the page size and only the first bits of the logical address are used to look at the mapping in the table in order to 
 reduce the size of the entries in the table. Some entries do not refer to any physical page: this means that they have the present flag clear. This could be because their contents have been swapped out or because they never have been touched.
 
-\paragraph{}This management of the process memory by the kernel is represented on the \autoref{fig:kernel_memo}.
+\paragraph{}This management of a process memory by the kernel is represented on the \autoref{fig:kernel_memo}.
 \begin{figure}[H]
   \centering
   \includegraphics[scale=0.6]{kernel_memo.png}
-  \caption{Management of the process memory by the kernel.}\label{fig:kernel_memo}
+  \caption{Management of a process memory by the kernel.}\label{fig:kernel_memo}
 \end{figure}
 
 \section{Time spent}
-\paragraph{}Considering the time spent on research before starting the implementation, the implementation, testing, and making the report, Olivier spent approximately \texttt{x} hours and Maxime spent approximately 17 hours.
+\paragraph{}Considering the time spent on research before starting the implementation, the implementation, testing, and making the report, Olivier spent approximately 15 hours and Maxime spent approximately 17 hours.
 
 \end{document}

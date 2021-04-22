@@ -1,0 +1,254 @@
+From d5dcb26087085b14bc9cefca6c4e1028e526f055 Mon Sep 17 00:00:00 2001
+From: Maxime Goffart <maximegoffart@icloud.com>
+Date: Thu, 22 Apr 2021 10:59:43 +0200
+Subject: [PATCH 8/8] Format error syslog
+
+---
+ custom/get_processes.c | 32 ++++++++++++++++----------------
+ custom/getnbpages.c    |  8 ++++----
+ custom/getreadpages.c  | 14 +++++++-------
+ 3 files changed, 27 insertions(+), 27 deletions(-)
+
+diff --git a/custom/get_processes.c b/custom/get_processes.c
+index e56798388..64fc9a2dc 100644
+--- a/custom/get_processes.c
++++ b/custom/get_processes.c
+@@ -96,7 +96,7 @@ struct task_struct_list* find_processes(
+        which has pid = 1 */
+     struct task_struct* rootProc = find_task_by_vpid(1);
+     if(!rootProc){
+-        printk(KERN_DEBUG "[find_processes] unable to find root proc");
++        printk(KERN_DEBUG "[INFO0940][ERROR][find_processes] unable to find root proc");
+         return NULL;
+     }
+ 
+@@ -105,7 +105,7 @@ struct task_struct_list* find_processes(
+ 
+     rootProcName = kmalloc(sizeof(char)*50, GFP_KERNEL);
+     if(!rootProcName){
+-        printk(KERN_DEBUG "[find_processes] memory allocation issue");
++        printk(KERN_DEBUG "[INFO0940][ERROR][find_processes] memory allocation issue");
+         return NULL;
+     }
+     rootProcName = __get_task_comm(rootProcName, 50, rootProc);
+@@ -113,14 +113,14 @@ struct task_struct_list* find_processes(
+     // Creates empty list
+     list = create_task_list(process_name, name_len);
+     if(!list){
+-        printk(KERN_DEBUG "[find_processes] error while creating list");
++        printk(KERN_DEBUG "[INFO0940][ERROR][find_processes] error while creating list");
+         return NULL;
+     }
+ 
+     // add_children_task_to_list requires a buffer
+     tmp = kmalloc(sizeof(char) * 50, GFP_KERNEL);
+     if(!tmp){
+-        printk(KERN_DEBUG "[find_processes] memory allocation issue");
++        printk(KERN_DEBUG "[INFO0940][ERROR][find_processes] memory allocation issue");
+         task_list_destroy(list);
+         return NULL;
+     }
+@@ -146,14 +146,14 @@ static struct task_struct_list* create_task_list(
+ ){
+     struct task_struct_list* list = kmalloc(sizeof(*list), GFP_KERNEL);
+     if(!list){
+-        printk(KERN_DEBUG "[create_task_list] memory allocation issue");
++        printk(KERN_DEBUG "[INFO0940][ERROR][create_task_list] memory allocation issue");
+         return NULL;
+     }
+ 
+     // Saves common process name
+     list->commonName = kmalloc(sizeof(char) * nameLen, GFP_KERNEL);
+     if(!list->commonName){
+-        printk(KERN_DEBUG "[create_task_list] memory allocation issue");
++        printk(KERN_DEBUG "[INFO0940][ERROR][create_task_list] memory allocation issue");
+         kfree(list);
+         return NULL;
+     }
+@@ -173,11 +173,11 @@ static int task_list_add(
+     struct task_struct_list* list
+ ){
+     if(!list){
+-        printk(KERN_DEBUG "[task_list_add] invalid list pointer");
++        printk(KERN_DEBUG "[INFO0940][ERROR][task_list_add] invalid list pointer");
+         return -1;
+     }
+     if(!task){
+-        printk(KERN_DEBUG "[task_list_add] invalid task pointer");
++        printk(KERN_DEBUG "[INFO0940][ERROR][task_list_add] invalid task pointer");
+         return -1;
+     }
+ 
+@@ -185,7 +185,7 @@ static int task_list_add(
+     if(!list->head){
+         list->head = kmalloc(sizeof(struct task_struct_list_node), GFP_KERNEL);
+         if(!list->head){
+-            printk(KERN_DEBUG "[task_list_add] error while allocating memory");
++            printk(KERN_DEBUG "[INFO0940][ERROR][task_list_add] error while allocating memory");
+             return -ENOMEM;
+         }
+         list->tail = list->head;
+@@ -194,13 +194,13 @@ static int task_list_add(
+         list->head->next = NULL;
+         list->head->pgList = NULL;
+         if(parse_pages(list->head, list) < 0){
+-            printk(KERN_DEBUG "[task_list_add] error while parsing pages");
++            printk(KERN_DEBUG "[INFO0940][ERROR][task_list_add] error while parsing pages");
+             return -2;
+         }
+     }else{ // List already stores elements => updates end of list
+         list->tail->next = kmalloc(sizeof(struct task_struct_list_node), GFP_KERNEL);
+         if(!list->tail->next){
+-            printk(KERN_DEBUG "[task_list_add] error while allocating memory");
++            printk(KERN_DEBUG "[INFO0940][ERROR][task_list_add] error while allocating memory");
+             return -ENOMEM;
+         }
+         list->tail = list->tail->next;
+@@ -209,7 +209,7 @@ static int task_list_add(
+         list->nbProcess+=1;
+         list->tail->pgList = NULL;
+         if(parse_pages(list->tail, list) < 0){
+-            printk(KERN_DEBUG "[task_list_add] error while parsing pages");
++            printk(KERN_DEBUG "[INFO0940][ERROR][task_list_add] error while parsing pages");
+             return -2;
+         }
+     }
+@@ -299,7 +299,7 @@ static pte_t* find_page_entry(
+     pte_t* ptep = NULL;
+ 
+     if(!mm){
+-        printk(KERN_DEBUG "[find_page_entry] invalid mm pointer");
++        printk(KERN_DEBUG "[INFO0940][ERROR][find_page_entry] invalid mm pointer");
+         return NULL;
+     }
+  
+@@ -336,12 +336,12 @@ static int parse_pages(
+     pte_t* ptep = NULL;
+ 
+     if(!node){
+-        printk(KERN_DEBUG "[parse_pages] invalid node pointer");
++        printk(KERN_DEBUG "[INFO0940][ERROR][parse_pages] invalid node pointer");
+         return -1;
+     }
+ 
+     if(!tList){
+-        printk(KERN_DEBUG "[parse_pages] invalid list pointer");
++        printk(KERN_DEBUG "[INFO0940][ERROR][parse_pages] invalid list pointer");
+         return -1;
+     }
+ 
+@@ -359,7 +359,7 @@ static int parse_pages(
+                 if(pte_present(*ptep) && !pte_write(*ptep)){ 
+                     pList = kmalloc(sizeof(struct page_list), GFP_KERNEL);
+                     if(!pList){
+-                        printk(KERN_DEBUG "[parse_pages] error while allocating memory");
++                        printk(KERN_DEBUG "[INFO0940][ERROR][parse_pages] error while allocating memory");
+                         return -ENOMEM;
+                     }
+ 
+diff --git a/custom/getnbpages.c b/custom/getnbpages.c
+index e484161da..247041a2a 100644
+--- a/custom/getnbpages.c
++++ b/custom/getnbpages.c
+@@ -23,14 +23,14 @@ SYSCALL_DEFINE2(
+ 
+     // Checks if we can access process name in user space safely
+     if(!access_ok(VERIFY_READ, process_name, sizeof(char) * name_len)){
+-        printk(KERN_DEBUG "[getnbpages] unable to access process name in user space");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getnbpages] unable to access process name in user space");
+         return -1;
+     }
+ 
+     // Copies given process name from user space
+     processNameLocal = kmalloc(sizeof(char) * name_len, GFP_KERNEL);
+     if(!processNameLocal){
+-        printk(KERN_DEBUG "[getnbpages] unable to allocate memory for local process name");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getnbpages] unable to allocate memory for local process name");
+         return -ENOMEM;
+     }
+     remainingBytesName = copy_from_user(
+@@ -39,7 +39,7 @@ SYSCALL_DEFINE2(
+         sizeof(char) * name_len
+     );
+     if(remainingBytesName != 0){
+-        printk(KERN_DEBUG "[getreadpages] error while copying name from user space");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getreadpages] error while copying name from user space");
+         if(processNameLocal)
+             kfree(processNameLocal);
+         return -1;
+@@ -47,7 +47,7 @@ SYSCALL_DEFINE2(
+ 
+     tlist = find_processes(processNameLocal, (unsigned int) name_len);
+     if(!tlist){
+-        printk(KERN_DEBUG "[SYS_CALL][getnbpages] error in find_processes");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getnbpages] error in find_processes");
+         if(processNameLocal)
+             kfree(processNameLocal);
+         return -1;
+diff --git a/custom/getreadpages.c b/custom/getreadpages.c
+index bece7f9be..e81533bfc 100644
+--- a/custom/getreadpages.c
++++ b/custom/getreadpages.c
+@@ -40,12 +40,12 @@ SYSCALL_DEFINE3(
+         pointer to the data */
+     rootProc = find_task_by_vpid(1);
+     if(!rootProc){
+-        printk(KERN_DEBUG "[getreadpages] unable to find root proc");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getreadpages] unable to find root proc");
+         return -1;
+     }
+     // Checks if the required pointers are valid
+     if(!rootProc->mm || !rootProc->mm->presentReadOnlyPages){
+-        printk(KERN_DEBUG "[getreadpages] unable to locate the data");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getreadpages] unable to locate the data");
+         return -1;
+     }
+ 
+@@ -59,7 +59,7 @@ SYSCALL_DEFINE3(
+     // Copy given process name from user space
+     processNameLocal = kmalloc(sizeof(char)*name_len, GFP_KERNEL);
+     if(!processNameLocal){
+-        printk(KERN_DEBUG "[getreadpages] unable to allocate memory for local process name");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getreadpages] unable to allocate memory for local process name");
+         return -ENOMEM;
+     }
+     remainingBytesName = copy_from_user(
+@@ -68,7 +68,7 @@ SYSCALL_DEFINE3(
+         sizeof(char) * name_len
+     );
+     if(remainingBytesName != 0){
+-        printk(KERN_DEBUG "[getreadpages] error while copying name from user space");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getreadpages] error while copying name from user space");
+         if(processNameLocal)
+             kfree(processNameLocal);
+         return -1;
+@@ -77,7 +77,7 @@ SYSCALL_DEFINE3(
+     // Checks if the names match
+     strncmpRtn = strncmp(processNameLocal, list->commonName, shortestName);
+     if(strncmpRtn != 0){
+-        printk(KERN_DEBUG "[getreadpages] getnbpages was not previously called on the same name");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getreadpages] getnbpages was not previously called on the same name");
+         if(processNameLocal)
+             kfree(processNameLocal);
+         return -1;
+@@ -86,7 +86,7 @@ SYSCALL_DEFINE3(
+     // Local bitmap
+     bitmapKernel = kmalloc(sizeof(char) * list->nbPages, GFP_KERNEL);
+     if(!bitmapKernel){
+-        printk(KERN_DEBUG "[getreadpages] unable to allocate memory for bitmap kernel");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getreadpages] unable to allocate memory for bitmap kernel");
+         if(processNameLocal)
+             kfree(processNameLocal);
+         return -ENOMEM;
+@@ -113,7 +113,7 @@ SYSCALL_DEFINE3(
+         sizeof(char) * list->nbPages
+     );
+     if(remainingBytesBitmap != 0){
+-        printk(KERN_DEBUG "[getreadpages] unable to copy all bytes of bitmap. Remaining %lu bytes", remainingBytesBitmap);
++        printk(KERN_DEBUG "[INFO0940][ERROR][getreadpages] unable to copy all bytes of bitmap. Remaining %lu bytes", remainingBytesBitmap);
+         if(processNameLocal)
+             kfree(processNameLocal);
+         if(bitmapKernel)
+-- 
+2.27.0
+

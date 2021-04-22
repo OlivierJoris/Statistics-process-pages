@@ -1,0 +1,188 @@
+From 10b2f24d7e3a7314c2d1b04fdd800866d1ac3189 Mon Sep 17 00:00:00 2001
+From: Maxime Goffart <maximegoffart@icloud.com>
+Date: Wed, 21 Apr 2021 15:37:57 +0200
+Subject: [PATCH 6/8] Minor modifs getnbpages & get_processes
+
+---
+ custom/get_processes.c | 22 +++++++++++---------
+ custom/get_processes.h |  6 ++++--
+ custom/getnbpages.c    | 47 +++++++++++++++++++++++++++++++++++++++---
+ 3 files changed, 60 insertions(+), 15 deletions(-)
+
+diff --git a/custom/get_processes.c b/custom/get_processes.c
+index f84a2ead6..e528d7b4b 100644
+--- a/custom/get_processes.c
++++ b/custom/get_processes.c
+@@ -1,5 +1,6 @@
+ /*
+- * Module to get list of task_structs of processes that share a common name.
++ * Module to get list of task_structs of processes that share a common name
++ * & list of pages which are read-only & present in memory.
+  *
+  * @author Maxime Goffart (180521) & Olivier Joris (182113)
+  */
+@@ -20,6 +21,7 @@
+  * Creates the list.
+  *
+  * @param commonName Common name for the processes.
++ * @param nameLen Length of the common name.
+  * 
+  * @return Empty list of task_struct.
+  */
+@@ -29,19 +31,19 @@ static struct task_struct_list* create_task_list(
+ );
+ 
+ /*
+- * Adds a task_struct to the list and add corresponding pages to the kernel
++ * Adds a task_struct to the list and adds corresponding pages to the kernel
+  * structure.
+  *
+  * @param task Task to add to the list.
+- * @param list List in which to add the task_struct.
++ * @param list List in which to add the task_struct & the pages.
+  * 
+- * @return 0 When fine. -ENOMEM memory issue.
++ * @return 0 Went fine. -ENOMEM memory issue.
+  */
+ static int task_list_add(struct task_struct* task, struct task_struct_list* list);
+ 
+ /*
+  * Adds a task and/or its children to the list if they have the common name of
+- * the list and add corresponding pages to the kernel structure.
++ * the list and adds corresponding pages to the kernel structure.
+  * 
+  * @param tmpBuffer Temporary buffer
+  *  (need to be the size of the common process name).
+@@ -55,9 +57,9 @@ static void add_children_task_to_list(
+ );
+ 
+ /*
+- * Finds the PTE corresponding to an address in memory areas.
++ * Finds the PTE corresponding to an address in memory area.
+  *
+- * @param mm The memory areas.
++ * @param mm The memory area.
+  * @param address The address.
+  * 
+  * @return The corresponding PTE if find, else NULL.
+@@ -68,9 +70,9 @@ static pte_t* find_page_entry(
+ );
+ 
+ /*
+- * Fill the task_struct_list structure with present and read-only pages.
++ * Fills the task_struct_list structure with present and read-only pages.
+  *
+- * @param node The node that will be fillec with pages.
++ * @param node The node that will be filled with pages.
+  * @param tList The task_struct_list.
+  * 
+  * @return 0 if no error
+@@ -275,7 +277,7 @@ static void add_children_task_to_list(
+     // If task's name == common name => adds it to the list
+     if(!strncmp(tmpBuffer, list->commonName, 50)){
+         rtnAdd = task_list_add(task, list);
+-        if(rtnAdd == -1 || rtnAdd == -ENOMEM || rtnAdd == -2)
++        if(rtnAdd < 0 || rtnAdd == -ENOMEM)
+             return;
+     }
+ 
+diff --git a/custom/get_processes.h b/custom/get_processes.h
+index c0ea0be75..cf6e7368f 100644
+--- a/custom/get_processes.h
++++ b/custom/get_processes.h
+@@ -1,5 +1,6 @@
+ /*
+- * Interface to get list of task_structs of processes that share a common name.
++ * Interface to get list of task_structs of processes that share a common name
++ * & list of pages which are read-only & present in memory.
+  *
+  * @author Maxime Goffart (180521) & Olivier Joris (182113)
+  */
+@@ -52,7 +53,8 @@ struct page_list{
+ 
+ /*
+  * Returns a list containing task_structs of processes that have a name
+- * equal to process_name.
++ * equal to process_name & list of pages which are read-only
++ * & present in memory.
+  * 
+  * @param process_name Name of process for which we are looking for.
+  * @param name_len Length of the process's name.
+diff --git a/custom/getnbpages.c b/custom/getnbpages.c
+index 25a711d4b..f38ba5eb5 100644
+--- a/custom/getnbpages.c
++++ b/custom/getnbpages.c
+@@ -1,6 +1,16 @@
++/*
++ * Implementation of system call #385 getnbpages.
++ * Get number of pages being used & set kernel data structure of pages
++ * being read-only & present in memory.
++ *
++ * @author Maxime Goffart (180521) & Olivier Joris (182113)
++ */
++
+ #include "get_processes.h"
+ #include <linux/syscalls.h>
+ #include <linux/types.h>
++#include <linux/slab.h>
++#include <linux/errno.h>
+ 
+ SYSCALL_DEFINE2(
+     getnbpages,
+@@ -8,19 +18,50 @@ SYSCALL_DEFINE2(
+     const size_t, name_len
+ ){
+     struct task_struct_list* tlist;
++    char* processNameLocal;
++    unsigned long remainingBytesName;
++
+     printk(KERN_DEBUG "[INFO0940][SYS_CALL][getnbpages] getnbpages sys call");
+ 
+     printk(KERN_DEBUG "[SYS_CALL][getnbpages] len process name = %u", name_len);
+     printk(KERN_DEBUG "[SYS_CALL][getnbpages] process name = %s", process_name);
+ 
+-    tlist = find_processes(process_name, (unsigned int) name_len);
+-    if(!tlist)
+-    {
++    // Checks if we can access process name in user space safely
++    if(!access_ok(VERIFY_READ, process_name, sizeof(char) * name_len)){
++        printk(KERN_DEBUG "[getnbpages] unable to access process name in user space");
++        return -1;
++    }
++
++    // Copies given process name from user space
++    processNameLocal = kmalloc(sizeof(char) * name_len, GFP_KERNEL);
++    if(!processNameLocal){
++        printk(KERN_DEBUG "[getnbpages] unable to allocate memory for local process name");
++        return -ENOMEM;
++    }
++    remainingBytesName = copy_from_user(
++        processNameLocal,
++        process_name,
++        sizeof(char) * name_len
++    );
++    if(remainingBytesName != 0){
++        printk(KERN_DEBUG "[getreadpages] error while copying name from user space");
++        if(processNameLocal)
++            kfree(processNameLocal);
++        return -1;
++    }
++
++    tlist = find_processes(processNameLocal, (unsigned int) name_len);
++    if(!tlist){
+         printk(KERN_DEBUG "[SYS_CALL][getnbpages] error in find_processes");
++        if(processNameLocal)
++            kfree(processNameLocal);
+         return -1;
+     }
+ 
+     printk(KERN_DEBUG "[SYS_CALL][getnbpages] nbPagesReadOnlyPresentPages : %u", tlist->nbPagesPresentReadable);
+ 
++    if(processNameLocal)
++        kfree(processNameLocal);
++
+     return tlist->nbPages;
+ }
+-- 
+2.27.0
+

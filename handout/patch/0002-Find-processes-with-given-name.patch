@@ -1,0 +1,355 @@
+From b689986379b7152950a172cbaebf96881fec4e11 Mon Sep 17 00:00:00 2001
+From: Maxime Goffart <maximegoffart@icloud.com>
+Date: Sun, 18 Apr 2021 17:00:40 +0200
+Subject: [PATCH 2/8] Find processes with given name
+
+---
+ custom/Makefile        |   3 +-
+ custom/get_processes.c | 241 +++++++++++++++++++++++++++++++++++++++++
+ custom/get_processes.h |  50 +++++++++
+ custom/getnbpages.c    |   8 ++
+ 4 files changed, 301 insertions(+), 1 deletion(-)
+ create mode 100644 custom/get_processes.c
+ create mode 100644 custom/get_processes.h
+
+diff --git a/custom/Makefile b/custom/Makefile
+index 210d66273..39769ab5b 100644
+--- a/custom/Makefile
++++ b/custom/Makefile
+@@ -1 +1,2 @@
+-obj-y := getnbpages.o getreadpages.o
+\ No newline at end of file
++# Adds our files to the compilation/building process.
++obj-y := getnbpages.o getreadpages.o get_processes.o
+\ No newline at end of file
+diff --git a/custom/get_processes.c b/custom/get_processes.c
+new file mode 100644
+index 000000000..171510c6c
+--- /dev/null
++++ b/custom/get_processes.c
+@@ -0,0 +1,241 @@
++/*
++ * Module to get list of task_structs of processes that share a common name.
++ *
++ * @author Maxime Goffart (180521) & Olivier Joris (182113)
++ */
++
++#include "get_processes.h"
++#include <linux/slab.h>
++#include <linux/types.h>
++#include <linux/list.h>
++#include <linux/sched.h>
++#include <linux/errno.h>
++#include <linux/stddef.h>
++#include <linux/string.h>
++
++/*
++ * Creates the list.
++ *
++ * @param commonName Common name for the processes.
++ * 
++ * @return Empty list of task_struct.
++ */
++static struct task_struct_list* create_task_list(
++    const char* commonName,
++    unsigned int nameLen
++);
++
++/*
++ * Adds a task_struct to the list.
++ *
++ * @param task Task to add to the list.
++ * @param list List in which to add the task_struct.
++ * 
++ * @return 0 When fine. -ENOMEM memory issue.
++ */
++static int task_list_add(struct task_struct* task, struct task_struct_list* list);
++
++/*
++ * Destroys a list of task_struct.
++ *
++ * @param list Head to list we want to destroy.
++ */
++static void task_list_destroy(struct task_struct_list* list);
++
++/*
++ * Adds a task and/or its children to the list if they have the common name of
++ * the list.
++ * 
++ * @param tmpBuffer Temporary buffer
++ *  (need to be the size of the common process name).
++ * @param task Task & its children to potentially add.
++ * @param list The list in which to add them.
++ */
++static void add_children_task_to_list(
++    char* tmpBuffer,
++    struct task_struct* task,
++    struct task_struct_list* list
++);
++
++struct task_struct_list* find_processes(
++    const char* process_name,
++    const unsigned name_len
++){
++    char* rootProcName;
++    char* tmp;
++    struct task_struct_list* list;
++
++    /* First, we need to find the root process (initd or systemd)
++       which has pid = 1 */
++    struct task_struct* rootProc = find_task_by_vpid(1);
++    if(!rootProc){
++        printk(KERN_DEBUG "[find_processes] unable to find root proc");
++        return NULL;
++    }
++    printk(KERN_DEBUG "[find_processes] able to find root proc");
++
++    rootProcName = kmalloc(sizeof(char)*50, GFP_KERNEL);
++    if(!rootProcName){
++        printk(KERN_DEBUG "[find_processes] memory allocation issue");
++        return NULL;
++    }
++    rootProcName = __get_task_comm(rootProcName, 50, rootProc);
++    printk(KERN_DEBUG "[find_processes] root proc name %s", rootProcName);
++
++    // Creates empty list
++    list = create_task_list(process_name, name_len);
++    if(!list){
++        printk(KERN_DEBUG "[find_processes] error while creating list");
++        return NULL;
++    }
++
++    // add_children_task_to_list requires a buffer
++    tmp = kmalloc(sizeof(char) * 50, GFP_KERNEL);
++    if(!tmp){
++        printk(KERN_DEBUG "[find_processes] memory allocation issue");
++        task_list_destroy(list);
++        return NULL;
++    }
++
++    /* Adds children of root process to the list if they have
++        their name = process_name */
++    add_children_task_to_list(tmp, rootProc, list);
++
++    printk(KERN_DEBUG "[find_processes] nb processes with given name %u", list->nbProcess);
++
++    if(rootProcName)
++        kfree(rootProcName);
++    if(tmp)
++        kfree(tmp);
++
++    return list;
++}
++
++static struct task_struct_list* create_task_list(
++    const char* commonName,
++    unsigned int nameLen
++){
++    struct task_struct_list* list = kmalloc(sizeof(*list), GFP_KERNEL);
++    if(!list){
++        printk(KERN_DEBUG "[create_task_list] memory allocation issue");
++        return NULL;
++    }
++
++    // Saves common process name
++    list->commonName = kmalloc(sizeof(char) * nameLen, GFP_KERNEL);
++    if(!list->commonName){
++        printk(KERN_DEBUG "[create_task_list] memory allocation issue");
++        kfree(list);
++        return NULL;
++    }
++
++    list->commonName = strncpy(list->commonName, commonName, nameLen);
++    list->nameLen = nameLen;
++    list->nbProcess = 0;
++    list->head = NULL;
++    list->tail = NULL;
++
++    return list;
++}
++
++static int task_list_add(
++    struct task_struct* task,
++    struct task_struct_list* list
++){
++    if(!list){
++        printk(KERN_DEBUG "[task_list_add] invalid list pointer");
++        return -1;
++    }
++    if(!task){
++        printk(KERN_DEBUG "[task_list_add] inavlid task pointer");
++        return -1;
++    }
++
++    // List is currently empty
++    if(!list->head){
++        list->head = kmalloc(sizeof(struct task_struct_list_node), GFP_KERNEL);
++        if(!list->head){
++            printk(KERN_DEBUG "[task_list_add] error while allocating memory");
++            return -ENOMEM;
++        }
++        list->tail = list->head;
++        list->nbProcess+=1;
++        list->head->task = task;
++        list->head->next = NULL;
++    }else{ // List already stores elements => updates end of list
++        list->tail->next = kmalloc(sizeof(struct task_struct_list_node), GFP_KERNEL);
++        if(!list->tail->next){
++            printk(KERN_DEBUG "[task_list_add] error while allocating memory");
++            return -ENOMEM;
++        }
++        list->tail = list->tail->next;
++        list->tail->task = task;
++        list->tail->next = NULL;
++        list->nbProcess+=1;
++    }
++    
++    return 0;
++}
++
++static void task_list_destroy(struct task_struct_list* list){
++    struct task_struct_list_node* node;
++    struct task_struct_list_node* next;
++
++    if(!list)
++        return;
++    if(!list->head){
++        if(list->commonName)
++            kfree(list->commonName);
++        kfree(list);
++        return;
++    }
++
++    node = list->head;
++    while(node){
++        next = node->next;
++        kfree(node);
++        node = next;
++    }
++
++    if(list->commonName)
++        kfree(list->commonName);
++
++    kfree(list);
++
++    return;
++}
++
++static void add_children_task_to_list(
++    char* tmpBuffer,
++    struct task_struct* task,
++    struct task_struct_list* list
++){
++    int rtnAdd;
++    struct list_head *i, *tmp;
++    struct task_struct *taskStruct;
++
++    if(!tmpBuffer || !task || !list || !list->commonName)
++        return;
++
++    // Gets name of task
++    __get_task_comm(tmpBuffer, 50, task);
++
++    // If task's name == common name => adds it to the list
++    if(!strncmp(tmpBuffer, list->commonName, 50)){
++        rtnAdd = task_list_add(task, list);
++        if(rtnAdd == -1 || rtnAdd == -ENOMEM)
++            return;
++    }
++
++    // If the task has no children, stop
++    if(list_empty(&(task->children)))
++        return;
++
++    // Rec call on all the children of the task
++    list_for_each_safe(i, tmp, &(task->children)){
++        taskStruct = list_entry(i, struct task_struct, sibling);
++        add_children_task_to_list(tmpBuffer, taskStruct, list);
++    }
++
++    return;
++}  
+diff --git a/custom/get_processes.h b/custom/get_processes.h
+new file mode 100644
+index 000000000..e258eaa95
+--- /dev/null
++++ b/custom/get_processes.h
+@@ -0,0 +1,50 @@
++/*
++ * Interface to get list of task_structs of processes that share a common name.
++ *
++ * @author Maxime Goffart (180521) & Olivier Joris (182113)
++ */
++
++#include <linux/types.h>
++#include <linux/list.h>
++#include <linux/sched.h>
++
++/*
++ * List of task structures of processes that share a same name.
++ */
++struct task_struct_list{
++    // Head of list
++    struct task_struct_list_node* head;
++    // Tail of list
++    struct task_struct_list_node* tail;
++    // Nb processes in the list
++    unsigned int nbProcess;
++    // Common name
++    char* commonName;
++    // Common name's length
++    unsigned int nameLen;
++};
++
++/*
++ * Node inside the list of task structures.
++ */
++struct task_struct_list_node{
++    // Next node in the list
++    struct task_struct_list_node* next;
++    // Pointer to the task structure of the node
++    struct task_struct* task;
++};
++
++/*
++ * Returns a list containing task_structs of processes that have a name
++ * equal to process_name.
++ * 
++ * @param process_name Name of process for which we are looking for.
++ * @param name_len Length of the process's name.
++ * 
++ * @return Pointer to beginning of list containning the task_structs.
++ */
++struct task_struct_list* find_processes(
++    const char* process_name,
++    const unsigned name_len
++);
++
+diff --git a/custom/getnbpages.c b/custom/getnbpages.c
+index 0ab43b1b4..a2032ac0e 100644
+--- a/custom/getnbpages.c
++++ b/custom/getnbpages.c
+@@ -1,11 +1,19 @@
++#include "get_processes.h"
+ #include <linux/syscalls.h>
++#include <linux/types.h>
+ 
+ SYSCALL_DEFINE2(
+     getnbpages,
+     const char __user *, process_name,
+     const size_t, name_len
+ ){
++    struct task_struct_list* tlist;
+     printk(KERN_DEBUG "[INFO0940][SYS_CALL][getnbpages] getnbpages sys call");
+ 
++    printk(KERN_DEBUG "[SYS_CALL][getnbpages] len process name = %u", name_len);
++    printk(KERN_DEBUG "[SYS_CALL][getnbpages] process name = %s", process_name);
++
++    tlist = find_processes(process_name, (unsigned int) name_len);
++
+     return 1;
+ }
+\ No newline at end of file
+-- 
+2.27.0
+
