@@ -38,6 +38,7 @@ int main(int argc, char *argv[]){
 
     // 1. Get the number of pages of a process or several process(es) with a given name.
     long nb_pages = syscall(385, name, strlen(name));
+    printf("nb_pages : %lu\n", nb_pages);
     if (nb_pages <= 0){
         fprintf(stderr, "[ERROR] The given process(es) do(es) not have any pages or do(es) not exist\n");
         exit(n);

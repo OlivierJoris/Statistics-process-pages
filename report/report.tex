@@ -86,7 +86,29 @@
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-% TO BE FILLED %
+\section{Implementation}
+
+\section{How the memory of a process is managed by the kernel ?}
+
+\paragraph{}Processes are implemented in the kernel as instances of \texttt{task\_struct}. 
+This struct contains a \textit{mm} field which is an instance of \texttt{mm\_struct} that represents a 
+summary of the process memory. This \textit{mm} field contains a \textit{mmap} that is an instance of \texttt{vm\_area\_struct} that represents 
+a memory area. This \textit{nmap} field contains 3 fields \textit{vm\_start}, \textit{vm\_end}, and \textit{vm\_next}. The first one represents the logical 
+address corresponding to the first address within the virtual memory area, the second one represents the first address outside the virtual memory area, and the 
+third one is a reference to another \texttt{vm\_area\_struct} which contains higher segment begin and end addresses. 
+
+\paragraph{}To translate a logical address to a physical address, a page table is used. This table allows 
+to obtain the physical address corresponding to a given logical given address using multi-level paging in order to reduce the size of the table that is stored in physical memory.
+Moreover, the offset of the logical address is retained according to the page size and only the first bits of the logical address are used to look at the mapping in the table in order to 
+reduce the size of the entries in the table. Some entries do not refer to any physical page : this means that they have the present flag clear. This could be because their contents have been swapped out or because they never have been touched. 
+
+\paragraph{}This management of the process memory by the kernel is represented on the \autoref{fig:kernel_memo}.
+ 
+\begin{figure}[H]
+  \centering
+  \includegraphics[scale=0.6]{kernel_memo.png}
+  \caption{Management of the process memory by the kernel.}\label{fig:kernel_memo}
+\end{figure}
 
 
 \end{document}
