@@ -1,0 +1,1664 @@
+From 4873bb4f5cabe344b582b0964b5fbbfa7c1b3e58 Mon Sep 17 00:00:00 2001
+From: Maxime Goffart <maximegoffart@icloud.com>
+Date: Sat, 17 Apr 2021 16:54:01 +0200
+Subject: [PATCH 1/8] Create basic syscalls
+
+---
+ Makefile                               |  2 +-
+ arch/x86/entry/syscalls/syscall_32.tbl |  2 ++
+ custom/Makefile                        |  1 +
+ custom/getnbpages.c                    | 11 +++++++++++
+ custom/getreadpages.c                  | 12 ++++++++++++
+ include/linux/syscalls.h               |  6 ++++++
+ 6 files changed, 33 insertions(+), 1 deletion(-)
+ create mode 100644 custom/Makefile
+ create mode 100644 custom/getnbpages.c
+ create mode 100644 custom/getreadpages.c
+
+diff --git a/Makefile b/Makefile
+index c8b8e902d..c65faa3d9 100644
+--- a/Makefile
++++ b/Makefile
+@@ -940,7 +940,7 @@ endif
+ 
+ 
+ ifeq ($(KBUILD_EXTMOD),)
+-core-y		+= kernel/ certs/ mm/ fs/ ipc/ security/ crypto/ block/
++core-y		+= kernel/ certs/ mm/ fs/ ipc/ security/ crypto/ block/ custom/
+ 
+ vmlinux-dirs	:= $(patsubst %/,%,$(filter %/, $(init-y) $(init-m) \
+ 		     $(core-y) $(core-m) $(drivers-y) $(drivers-m) \
+diff --git a/arch/x86/entry/syscalls/syscall_32.tbl b/arch/x86/entry/syscalls/syscall_32.tbl
+index 448ac2161..e57790fe6 100644
+--- a/arch/x86/entry/syscalls/syscall_32.tbl
++++ b/arch/x86/entry/syscalls/syscall_32.tbl
+@@ -391,3 +391,5 @@
+ 382	i386	pkey_free		sys_pkey_free
+ 383	i386	statx			sys_statx
+ 384	i386	arch_prctl		sys_arch_prctl			compat_sys_arch_prctl
++385 i386    getnbpages      sys_getnbpages
++386 i386    getreadpages    sys_getreadpages
+diff --git a/custom/Makefile b/custom/Makefile
+new file mode 100644
+index 000000000..210d66273
+--- /dev/null
++++ b/custom/Makefile
+@@ -0,0 +1 @@
++obj-y := getnbpages.o getreadpages.o
+\ No newline at end of file
+diff --git a/custom/getnbpages.c b/custom/getnbpages.c
+new file mode 100644
+index 000000000..0ab43b1b4
+--- /dev/null
++++ b/custom/getnbpages.c
+@@ -0,0 +1,11 @@
++#include <linux/syscalls.h>
++
++SYSCALL_DEFINE2(
++    getnbpages,
++    const char __user *, process_name,
++    const size_t, name_len
++){
++    printk(KERN_DEBUG "[INFO0940][SYS_CALL][getnbpages] getnbpages sys call");
++
++    return 1;
++}
+\ No newline at end of file
+diff --git a/custom/getreadpages.c b/custom/getreadpages.c
+new file mode 100644
+index 000000000..4b5c9fd25
+--- /dev/null
++++ b/custom/getreadpages.c
+@@ -0,0 +1,12 @@
++#include <linux/syscalls.h>
++
++SYSCALL_DEFINE3(
++    getreadpages,
++    char __user *, bitmap,
++    const char __user *, process_name,
++    const size_t, name_len
++){
++    printk(KERN_DEBUG "[INFO0940][SYS_CALL][getreadpages] getreadpages sys call");
++
++    return 0;
++}
+\ No newline at end of file
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index a78186d82..e1e046607 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -941,4 +941,10 @@ asmlinkage long sys_pkey_free(int pkey);
+ asmlinkage long sys_statx(int dfd, const char __user *path, unsigned flags,
+ 			  unsigned mask, struct statx __user *buffer);
+ 
++asmlinkage long sys_getnbpages(const char __user *process_name,
++								const size_t name_len);
++asmlinkage long sys_getreadpages(char __user *bitmap,
++			const char __user *process_name,
++			const size_t name_len);
++
+ #endif
+-- 
+2.27.0
+
+
+From b689986379b7152950a172cbaebf96881fec4e11 Mon Sep 17 00:00:00 2001
+From: Maxime Goffart <maximegoffart@icloud.com>
+Date: Sun, 18 Apr 2021 17:00:40 +0200
+Subject: [PATCH 2/8] Find processes with given name
+
+---
+ custom/Makefile        |   3 +-
+ custom/get_processes.c | 241 +++++++++++++++++++++++++++++++++++++++++
+ custom/get_processes.h |  50 +++++++++
+ custom/getnbpages.c    |   8 ++
+ 4 files changed, 301 insertions(+), 1 deletion(-)
+ create mode 100644 custom/get_processes.c
+ create mode 100644 custom/get_processes.h
+
+diff --git a/custom/Makefile b/custom/Makefile
+index 210d66273..39769ab5b 100644
+--- a/custom/Makefile
++++ b/custom/Makefile
+@@ -1 +1,2 @@
+-obj-y := getnbpages.o getreadpages.o
+\ No newline at end of file
++# Adds our files to the compilation/building process.
++obj-y := getnbpages.o getreadpages.o get_processes.o
+\ No newline at end of file
+diff --git a/custom/get_processes.c b/custom/get_processes.c
+new file mode 100644
+index 000000000..171510c6c
+--- /dev/null
++++ b/custom/get_processes.c
+@@ -0,0 +1,241 @@
++/*
++ * Module to get list of task_structs of processes that share a common name.
++ *
++ * @author Maxime Goffart (180521) & Olivier Joris (182113)
++ */
++
++#include "get_processes.h"
++#include <linux/slab.h>
++#include <linux/types.h>
++#include <linux/list.h>
++#include <linux/sched.h>
++#include <linux/errno.h>
++#include <linux/stddef.h>
++#include <linux/string.h>
++
++/*
++ * Creates the list.
++ *
++ * @param commonName Common name for the processes.
++ * 
++ * @return Empty list of task_struct.
++ */
++static struct task_struct_list* create_task_list(
++    const char* commonName,
++    unsigned int nameLen
++);
++
++/*
++ * Adds a task_struct to the list.
++ *
++ * @param task Task to add to the list.
++ * @param list List in which to add the task_struct.
++ * 
++ * @return 0 When fine. -ENOMEM memory issue.
++ */
++static int task_list_add(struct task_struct* task, struct task_struct_list* list);
++
++/*
++ * Destroys a list of task_struct.
++ *
++ * @param list Head to list we want to destroy.
++ */
++static void task_list_destroy(struct task_struct_list* list);
++
++/*
++ * Adds a task and/or its children to the list if they have the common name of
++ * the list.
++ * 
++ * @param tmpBuffer Temporary buffer
++ *  (need to be the size of the common process name).
++ * @param task Task & its children to potentially add.
++ * @param list The list in which to add them.
++ */
++static void add_children_task_to_list(
++    char* tmpBuffer,
++    struct task_struct* task,
++    struct task_struct_list* list
++);
++
++struct task_struct_list* find_processes(
++    const char* process_name,
++    const unsigned name_len
++){
++    char* rootProcName;
++    char* tmp;
++    struct task_struct_list* list;
++
++    /* First, we need to find the root process (initd or systemd)
++       which has pid = 1 */
++    struct task_struct* rootProc = find_task_by_vpid(1);
++    if(!rootProc){
++        printk(KERN_DEBUG "[find_processes] unable to find root proc");
++        return NULL;
++    }
++    printk(KERN_DEBUG "[find_processes] able to find root proc");
++
++    rootProcName = kmalloc(sizeof(char)*50, GFP_KERNEL);
++    if(!rootProcName){
++        printk(KERN_DEBUG "[find_processes] memory allocation issue");
++        return NULL;
++    }
++    rootProcName = __get_task_comm(rootProcName, 50, rootProc);
++    printk(KERN_DEBUG "[find_processes] root proc name %s", rootProcName);
++
++    // Creates empty list
++    list = create_task_list(process_name, name_len);
++    if(!list){
++        printk(KERN_DEBUG "[find_processes] error while creating list");
++        return NULL;
++    }
++
++    // add_children_task_to_list requires a buffer
++    tmp = kmalloc(sizeof(char) * 50, GFP_KERNEL);
++    if(!tmp){
++        printk(KERN_DEBUG "[find_processes] memory allocation issue");
++        task_list_destroy(list);
++        return NULL;
++    }
++
++    /* Adds children of root process to the list if they have
++        their name = process_name */
++    add_children_task_to_list(tmp, rootProc, list);
++
++    printk(KERN_DEBUG "[find_processes] nb processes with given name %u", list->nbProcess);
++
++    if(rootProcName)
++        kfree(rootProcName);
++    if(tmp)
++        kfree(tmp);
++
++    return list;
++}
++
++static struct task_struct_list* create_task_list(
++    const char* commonName,
++    unsigned int nameLen
++){
++    struct task_struct_list* list = kmalloc(sizeof(*list), GFP_KERNEL);
++    if(!list){
++        printk(KERN_DEBUG "[create_task_list] memory allocation issue");
++        return NULL;
++    }
++
++    // Saves common process name
++    list->commonName = kmalloc(sizeof(char) * nameLen, GFP_KERNEL);
++    if(!list->commonName){
++        printk(KERN_DEBUG "[create_task_list] memory allocation issue");
++        kfree(list);
++        return NULL;
++    }
++
++    list->commonName = strncpy(list->commonName, commonName, nameLen);
++    list->nameLen = nameLen;
++    list->nbProcess = 0;
++    list->head = NULL;
++    list->tail = NULL;
++
++    return list;
++}
++
++static int task_list_add(
++    struct task_struct* task,
++    struct task_struct_list* list
++){
++    if(!list){
++        printk(KERN_DEBUG "[task_list_add] invalid list pointer");
++        return -1;
++    }
++    if(!task){
++        printk(KERN_DEBUG "[task_list_add] inavlid task pointer");
++        return -1;
++    }
++
++    // List is currently empty
++    if(!list->head){
++        list->head = kmalloc(sizeof(struct task_struct_list_node), GFP_KERNEL);
++        if(!list->head){
++            printk(KERN_DEBUG "[task_list_add] error while allocating memory");
++            return -ENOMEM;
++        }
++        list->tail = list->head;
++        list->nbProcess+=1;
++        list->head->task = task;
++        list->head->next = NULL;
++    }else{ // List already stores elements => updates end of list
++        list->tail->next = kmalloc(sizeof(struct task_struct_list_node), GFP_KERNEL);
++        if(!list->tail->next){
++            printk(KERN_DEBUG "[task_list_add] error while allocating memory");
++            return -ENOMEM;
++        }
++        list->tail = list->tail->next;
++        list->tail->task = task;
++        list->tail->next = NULL;
++        list->nbProcess+=1;
++    }
++    
++    return 0;
++}
++
++static void task_list_destroy(struct task_struct_list* list){
++    struct task_struct_list_node* node;
++    struct task_struct_list_node* next;
++
++    if(!list)
++        return;
++    if(!list->head){
++        if(list->commonName)
++            kfree(list->commonName);
++        kfree(list);
++        return;
++    }
++
++    node = list->head;
++    while(node){
++        next = node->next;
++        kfree(node);
++        node = next;
++    }
++
++    if(list->commonName)
++        kfree(list->commonName);
++
++    kfree(list);
++
++    return;
++}
++
++static void add_children_task_to_list(
++    char* tmpBuffer,
++    struct task_struct* task,
++    struct task_struct_list* list
++){
++    int rtnAdd;
++    struct list_head *i, *tmp;
++    struct task_struct *taskStruct;
++
++    if(!tmpBuffer || !task || !list || !list->commonName)
++        return;
++
++    // Gets name of task
++    __get_task_comm(tmpBuffer, 50, task);
++
++    // If task's name == common name => adds it to the list
++    if(!strncmp(tmpBuffer, list->commonName, 50)){
++        rtnAdd = task_list_add(task, list);
++        if(rtnAdd == -1 || rtnAdd == -ENOMEM)
++            return;
++    }
++
++    // If the task has no children, stop
++    if(list_empty(&(task->children)))
++        return;
++
++    // Rec call on all the children of the task
++    list_for_each_safe(i, tmp, &(task->children)){
++        taskStruct = list_entry(i, struct task_struct, sibling);
++        add_children_task_to_list(tmpBuffer, taskStruct, list);
++    }
++
++    return;
++}  
+diff --git a/custom/get_processes.h b/custom/get_processes.h
+new file mode 100644
+index 000000000..e258eaa95
+--- /dev/null
++++ b/custom/get_processes.h
+@@ -0,0 +1,50 @@
++/*
++ * Interface to get list of task_structs of processes that share a common name.
++ *
++ * @author Maxime Goffart (180521) & Olivier Joris (182113)
++ */
++
++#include <linux/types.h>
++#include <linux/list.h>
++#include <linux/sched.h>
++
++/*
++ * List of task structures of processes that share a same name.
++ */
++struct task_struct_list{
++    // Head of list
++    struct task_struct_list_node* head;
++    // Tail of list
++    struct task_struct_list_node* tail;
++    // Nb processes in the list
++    unsigned int nbProcess;
++    // Common name
++    char* commonName;
++    // Common name's length
++    unsigned int nameLen;
++};
++
++/*
++ * Node inside the list of task structures.
++ */
++struct task_struct_list_node{
++    // Next node in the list
++    struct task_struct_list_node* next;
++    // Pointer to the task structure of the node
++    struct task_struct* task;
++};
++
++/*
++ * Returns a list containing task_structs of processes that have a name
++ * equal to process_name.
++ * 
++ * @param process_name Name of process for which we are looking for.
++ * @param name_len Length of the process's name.
++ * 
++ * @return Pointer to beginning of list containning the task_structs.
++ */
++struct task_struct_list* find_processes(
++    const char* process_name,
++    const unsigned name_len
++);
++
+diff --git a/custom/getnbpages.c b/custom/getnbpages.c
+index 0ab43b1b4..a2032ac0e 100644
+--- a/custom/getnbpages.c
++++ b/custom/getnbpages.c
+@@ -1,11 +1,19 @@
++#include "get_processes.h"
+ #include <linux/syscalls.h>
++#include <linux/types.h>
+ 
+ SYSCALL_DEFINE2(
+     getnbpages,
+     const char __user *, process_name,
+     const size_t, name_len
+ ){
++    struct task_struct_list* tlist;
+     printk(KERN_DEBUG "[INFO0940][SYS_CALL][getnbpages] getnbpages sys call");
+ 
++    printk(KERN_DEBUG "[SYS_CALL][getnbpages] len process name = %u", name_len);
++    printk(KERN_DEBUG "[SYS_CALL][getnbpages] process name = %s", process_name);
++
++    tlist = find_processes(process_name, (unsigned int) name_len);
++
+     return 1;
+ }
+\ No newline at end of file
+-- 
+2.27.0
+
+
+From d10381010ee464fa171f24fb0181966203ffe9f5 Mon Sep 17 00:00:00 2001
+From: Olivier Joris <joris.olivier@hotmail.com>
+Date: Tue, 20 Apr 2021 21:54:05 +0200
+Subject: [PATCH 3/8] parse_pages
+
+---
+ custom/get_processes.c | 157 +++++++++++++++++++++++++++++++++++++++--
+ custom/get_processes.h |  17 ++++-
+ custom/getnbpages.c    |  11 ++-
+ 3 files changed, 178 insertions(+), 7 deletions(-)
+
+diff --git a/custom/get_processes.c b/custom/get_processes.c
+index 171510c6c..a87642eea 100644
+--- a/custom/get_processes.c
++++ b/custom/get_processes.c
+@@ -12,6 +12,9 @@
+ #include <linux/errno.h>
+ #include <linux/stddef.h>
+ #include <linux/string.h>
++#include <linux/mm_types.h>
++#include <asm/pgtable.h>
++#include <asm/page.h>
+ 
+ /*
+  * Creates the list.
+@@ -26,7 +29,8 @@ static struct task_struct_list* create_task_list(
+ );
+ 
+ /*
+- * Adds a task_struct to the list.
++ * Adds a task_struct to the list and add corresponding pages to the kernel
++ * structure.
+  *
+  * @param task Task to add to the list.
+  * @param list List in which to add the task_struct.
+@@ -44,7 +48,7 @@ static void task_list_destroy(struct task_struct_list* list);
+ 
+ /*
+  * Adds a task and/or its children to the list if they have the common name of
+- * the list.
++ * the list and add corresponding pages to the kernel structure.
+  * 
+  * @param tmpBuffer Temporary buffer
+  *  (need to be the size of the common process name).
+@@ -57,6 +61,34 @@ static void add_children_task_to_list(
+     struct task_struct_list* list
+ );
+ 
++/*
++ * Finds the PTE corresponding to an address in memory areas.
++ *
++ * @param mm The memory areas.
++ * @param address The address.
++ * 
++ * @return The corresponding PTE if find, else NULL.
++ */
++static pte_t* find_page_entry(
++    const struct mm_struct* mm,
++    const unsigned long address
++);
++
++/*
++ * Fill the task_struct_list structure with present and read-only pages.
++ *
++ * @param node The node that will be fillec with pages.
++ * @param tList The task_struct_list.
++ * 
++ * @return 0 if no error
++ *         -1 if parameters error.
++ *         -ENOMEM if allocation error.     
++ */
++static int parse_pages(
++    struct task_struct_list_node* node,
++    struct task_struct_list* tList
++);
++
+ struct task_struct_list* find_processes(
+     const char* process_name,
+     const unsigned name_len
+@@ -135,6 +167,9 @@ static struct task_struct_list* create_task_list(
+     list->head = NULL;
+     list->tail = NULL;
+ 
++    list->nbPages = 0;
++    list->nbPagesPresentReadable = 0;
++
+     return list;
+ }
+ 
+@@ -147,7 +182,7 @@ static int task_list_add(
+         return -1;
+     }
+     if(!task){
+-        printk(KERN_DEBUG "[task_list_add] inavlid task pointer");
++        printk(KERN_DEBUG "[task_list_add] invalid task pointer");
+         return -1;
+     }
+ 
+@@ -162,6 +197,11 @@ static int task_list_add(
+         list->nbProcess+=1;
+         list->head->task = task;
+         list->head->next = NULL;
++        list->head->pgList = NULL;
++        if(parse_pages(list->head, list) < 0){
++            printk(KERN_DEBUG "[task_list_add] error while parsing pages");
++            return -2;
++        }
+     }else{ // List already stores elements => updates end of list
+         list->tail->next = kmalloc(sizeof(struct task_struct_list_node), GFP_KERNEL);
+         if(!list->tail->next){
+@@ -172,6 +212,11 @@ static int task_list_add(
+         list->tail->task = task;
+         list->tail->next = NULL;
+         list->nbProcess+=1;
++        list->tail->pgList = NULL;
++        if(parse_pages(list->tail, list) < 0){
++            printk(KERN_DEBUG "[task_list_add] error while parsing pages");
++            return -2;
++        }
+     }
+     
+     return 0;
+@@ -223,7 +268,7 @@ static void add_children_task_to_list(
+     // If task's name == common name => adds it to the list
+     if(!strncmp(tmpBuffer, list->commonName, 50)){
+         rtnAdd = task_list_add(task, list);
+-        if(rtnAdd == -1 || rtnAdd == -ENOMEM)
++        if(rtnAdd == -1 || rtnAdd == -ENOMEM || rtnAdd == -2)
+             return;
+     }
+ 
+@@ -239,3 +284,107 @@ static void add_children_task_to_list(
+ 
+     return;
+ }  
++
++static pte_t* find_page_entry(
++    const struct mm_struct* mm,
++    const unsigned long address
++){
++    pgd_t* pgd = NULL;
++    pud_t* pud = NULL;
++    pmd_t* pmd = NULL;
++    p4d_t* p4d = NULL;
++    pte_t* ptep = NULL;
++
++    if(!mm){
++        printk(KERN_DEBUG "[find_page_entry] invalid mm pointer");
++        return NULL;
++    }
++ 
++    pgd = pgd_offset(mm, address);
++    if(pgd_none(*pgd) || pgd_bad(*pgd))
++        return NULL;
++
++    p4d = p4d_offset(pgd, address);
++	if(p4d_none(*p4d) || p4d_bad(*p4d))
++		return NULL;
++
++    pud = pud_offset(p4d, address);
++	if(pud_none(*pud) || pud_bad(*pud))
++		return NULL;
++
++    pmd = pmd_offset(pud, address);
++    if(pmd_none(*pmd) || pmd_bad(*pmd))
++        return NULL;
++
++    ptep = pte_offset_kernel(pmd, address);
++    if(!ptep)
++        return NULL;
++
++    return ptep;
++}
++
++static int parse_pages(
++    struct task_struct_list_node* node,
++    struct task_struct_list* tList
++){
++    struct vm_area_struct* vma = NULL;
++    struct page_list* pList = NULL,* pListCurrent = NULL;
++    unsigned long address;
++    pte_t* ptep = NULL;
++
++    if(!node){
++        printk(KERN_DEBUG "[parse_pages] invalid node pointer");
++        return -1;
++    }
++
++    if(!tList){
++        printk(KERN_DEBUG "[parse_pages] invalid list pointer");
++        return -1;
++    }
++
++    if(node->task != NULL && node->task->mm != NULL){
++        
++        vma = node->task->mm->mmap;
++
++        while(vma != NULL){
++            for(address = vma->vm_start; address < vma->vm_end; address += PAGE_SIZE){
++                ptep = find_page_entry(node->task->mm, address);
++
++                if(!ptep || !pte_page(*ptep))
++                    continue;
++                
++                if(pte_present(*ptep) && !pte_write(*ptep)){ 
++                    pList = kmalloc(sizeof(struct page_list), GFP_KERNEL);
++                    if(!pList){
++                        printk(KERN_DEBUG "[parse_pages] error while allocating memory");
++                        return -ENOMEM;
++                    }
++
++                    pList->page = kmalloc(sizeof(struct page), GFP_KERNEL);
++                    if(!pList->page){
++                        printk(KERN_DEBUG "[parse_pages] error while allocating memory");
++                        return -ENOMEM;
++                    }
++
++                    pList->page = pte_page(*ptep);
++                    pList->next = NULL;
++
++                    pListCurrent = node->pgList;
++
++                    while(pListCurrent)
++                        pListCurrent = pListCurrent->next;
++
++                    //End of the list
++                    pListCurrent = pList;
++                    ++tList->nbPagesPresentReadable;
++                }
++
++                ++tList->nbPages;
++            }
++
++            vma = vma->vm_next;
++        }
++    }
++
++    return 0;
++}
+diff --git a/custom/get_processes.h b/custom/get_processes.h
+index e258eaa95..1de6ec7e6 100644
+--- a/custom/get_processes.h
++++ b/custom/get_processes.h
+@@ -22,6 +22,9 @@ struct task_struct_list{
+     char* commonName;
+     // Common name's length
+     unsigned int nameLen;
++    // Number of pages 
++    unsigned int nbPages;
++    unsigned int nbPagesPresentReadable;
+ };
+ 
+ /*
+@@ -32,6 +35,19 @@ struct task_struct_list_node{
+     struct task_struct_list_node* next;
+     // Pointer to the task structure of the node
+     struct task_struct* task;
++    /* List of present and read-only pages associated 
++    to the task */
++    struct page_list* pgList;
++};
++
++/*
++ * List of pages
++ */
++struct page_list{
++    // Pointer to page
++    struct page* page; 
++    // Pointer to next element of the list
++    struct page_list* next;
+ };
+ 
+ /*
+@@ -47,4 +63,3 @@ struct task_struct_list* find_processes(
+     const char* process_name,
+     const unsigned name_len
+ );
+-
+diff --git a/custom/getnbpages.c b/custom/getnbpages.c
+index a2032ac0e..25a711d4b 100644
+--- a/custom/getnbpages.c
++++ b/custom/getnbpages.c
+@@ -14,6 +14,13 @@ SYSCALL_DEFINE2(
+     printk(KERN_DEBUG "[SYS_CALL][getnbpages] process name = %s", process_name);
+ 
+     tlist = find_processes(process_name, (unsigned int) name_len);
++    if(!tlist)
++    {
++        printk(KERN_DEBUG "[SYS_CALL][getnbpages] error in find_processes");
++        return -1;
++    }
+ 
+-    return 1;
+-}
+\ No newline at end of file
++    printk(KERN_DEBUG "[SYS_CALL][getnbpages] nbPagesReadOnlyPresentPages : %u", tlist->nbPagesPresentReadable);
++
++    return tlist->nbPages;
++}
+-- 
+2.27.0
+
+
+From 51b74a8ccb4ed75329af27d04d907d84a993cb86 Mon Sep 17 00:00:00 2001
+From: Olivier Joris <joris.olivier@hotmail.com>
+Date: Tue, 20 Apr 2021 22:10:53 +0200
+Subject: [PATCH 4/8] free page_list
+
+---
+ custom/get_processes.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/custom/get_processes.c b/custom/get_processes.c
+index a87642eea..5c2e1cd36 100644
+--- a/custom/get_processes.c
++++ b/custom/get_processes.c
+@@ -225,6 +225,8 @@ static int task_list_add(
+ static void task_list_destroy(struct task_struct_list* list){
+     struct task_struct_list_node* node;
+     struct task_struct_list_node* next;
++    struct page_list* currentPg;
++    struct page_list* nextPg;
+ 
+     if(!list)
+         return;
+@@ -237,6 +239,14 @@ static void task_list_destroy(struct task_struct_list* list){
+ 
+     node = list->head;
+     while(node){
++        currentPg = node->pgList;
++        while(currentPg){
++            if(currentPg->page)
++                kfree(currentPg->page);
++            nextPg = currentPg->next;
++            kfree(currentPg);
++            currentPg = nextPg;
++        }
+         next = node->next;
+         kfree(node);
+         node = next;
+-- 
+2.27.0
+
+
+From 5bf88f94d4c1882e45d92198f284b6f5b7587224 Mon Sep 17 00:00:00 2001
+From: Maxime Goffart <maximegoffart@icloud.com>
+Date: Wed, 21 Apr 2021 14:57:37 +0200
+Subject: [PATCH 5/8] Sys call getreadpages
+
+---
+ custom/get_processes.c   |  38 +++++------
+ custom/get_processes.h   |  13 +++-
+ custom/getreadpages.c    | 132 ++++++++++++++++++++++++++++++++++++++-
+ include/linux/mm_types.h |   1 +
+ 4 files changed, 158 insertions(+), 26 deletions(-)
+
+diff --git a/custom/get_processes.c b/custom/get_processes.c
+index 5c2e1cd36..f84a2ead6 100644
+--- a/custom/get_processes.c
++++ b/custom/get_processes.c
+@@ -39,13 +39,6 @@ static struct task_struct_list* create_task_list(
+  */
+ static int task_list_add(struct task_struct* task, struct task_struct_list* list);
+ 
+-/*
+- * Destroys a list of task_struct.
+- *
+- * @param list Head to list we want to destroy.
+- */
+-static void task_list_destroy(struct task_struct_list* list);
+-
+ /*
+  * Adds a task and/or its children to the list if they have the common name of
+  * the list and add corresponding pages to the kernel structure.
+@@ -106,6 +99,9 @@ struct task_struct_list* find_processes(
+     }
+     printk(KERN_DEBUG "[find_processes] able to find root proc");
+ 
++    if(rootProc->mm)
++        rootProc->mm->presentReadOnlyPages = NULL;
++
+     rootProcName = kmalloc(sizeof(char)*50, GFP_KERNEL);
+     if(!rootProcName){
+         printk(KERN_DEBUG "[find_processes] memory allocation issue");
+@@ -135,6 +131,9 @@ struct task_struct_list* find_processes(
+ 
+     printk(KERN_DEBUG "[find_processes] nb processes with given name %u", list->nbProcess);
+ 
++    if(rootProc->mm)
++        rootProc->mm->presentReadOnlyPages = (void*) list;
++
+     if(rootProcName)
+         kfree(rootProcName);
+     if(tmp)
+@@ -222,7 +221,7 @@ static int task_list_add(
+     return 0;
+ }
+ 
+-static void task_list_destroy(struct task_struct_list* list){
++void task_list_destroy(struct task_struct_list* list){
+     struct task_struct_list_node* node;
+     struct task_struct_list_node* next;
+     struct page_list* currentPg;
+@@ -241,8 +240,6 @@ static void task_list_destroy(struct task_struct_list* list){
+     while(node){
+         currentPg = node->pgList;
+         while(currentPg){
+-            if(currentPg->page)
+-                kfree(currentPg->page);
+             nextPg = currentPg->next;
+             kfree(currentPg);
+             currentPg = nextPg;
+@@ -370,22 +367,19 @@ static int parse_pages(
+                         return -ENOMEM;
+                     }
+ 
+-                    pList->page = kmalloc(sizeof(struct page), GFP_KERNEL);
+-                    if(!pList->page){
+-                        printk(KERN_DEBUG "[parse_pages] error while allocating memory");
+-                        return -ENOMEM;
+-                    }
+-
+-                    pList->page = pte_page(*ptep);
++                    pList->pageIndex = tList->nbPages;
+                     pList->next = NULL;
+ 
+-                    pListCurrent = node->pgList;
++                    if(!node->pgList)
++                        node->pgList = pList;
++                    else{
++                        pListCurrent = node->pgList;
++                        while(pListCurrent->next)
++                            pListCurrent = pListCurrent->next;
+ 
+-                    while(pListCurrent)
+-                        pListCurrent = pListCurrent->next;
++                        pListCurrent->next = pList;
++                    }
+ 
+-                    //End of the list
+-                    pListCurrent = pList;
+                     ++tList->nbPagesPresentReadable;
+                 }
+ 
+diff --git a/custom/get_processes.h b/custom/get_processes.h
+index 1de6ec7e6..c0ea0be75 100644
+--- a/custom/get_processes.h
++++ b/custom/get_processes.h
+@@ -41,11 +41,11 @@ struct task_struct_list_node{
+ };
+ 
+ /*
+- * List of pages
++ * List of pages that are present & read-only in memory.
+  */
+ struct page_list{
+-    // Pointer to page
+-    struct page* page; 
++    // Index of the page inside the list.
++    unsigned int pageIndex;
+     // Pointer to next element of the list
+     struct page_list* next;
+ };
+@@ -63,3 +63,10 @@ struct task_struct_list* find_processes(
+     const char* process_name,
+     const unsigned name_len
+ );
++
++/*
++ * Destroys a list of task_struct.
++ *
++ * @param list Head to list we want to destroy.
++ */
++void task_list_destroy(struct task_struct_list* list);
+diff --git a/custom/getreadpages.c b/custom/getreadpages.c
+index 4b5c9fd25..16c0cb4b7 100644
+--- a/custom/getreadpages.c
++++ b/custom/getreadpages.c
+@@ -1,4 +1,26 @@
++/*
++ * Implementation of system call #386 getreadpages.
++ * Get bitmap structure of pages being read-only & present in
++ * memory.
++ * 
++ * @warning Need to call system call #385 getnbpages before.
++ *
++ * @author Maxime Goffart (180521) & Olivier Joris (182113)
++ */
++
++#include "get_processes.h"
+ #include <linux/syscalls.h>
++#include <linux/slab.h>
++#include <linux/types.h>
++#include <linux/list.h>
++#include <linux/sched.h>
++#include <linux/errno.h>
++#include <linux/stddef.h>
++#include <linux/string.h>
++#include <linux/mm_types.h>
++#include <asm/pgtable.h>
++#include <asm/page.h>
++
+ 
+ SYSCALL_DEFINE3(
+     getreadpages,
+@@ -6,7 +28,115 @@ SYSCALL_DEFINE3(
+     const char __user *, process_name,
+     const size_t, name_len
+ ){
++    struct task_struct* rootProc;
++    struct task_struct_list* list;
++    struct task_struct_list_node* currNode = NULL;
++    struct page_list* currPage = NULL;
++    unsigned int shortestName, loopIndex;
++    unsigned long remainingBytesBitmap, remainingBytesName;
++    int strncmpRtn;
++    char *bitmapKernel, *processNameLocal;
++
+     printk(KERN_DEBUG "[INFO0940][SYS_CALL][getreadpages] getreadpages sys call");
+ 
++    /* First, we need to get the process with pid=1 because it stores the
++        pointer to the data */
++    rootProc = find_task_by_vpid(1);
++    if(!rootProc){
++        printk(KERN_DEBUG "[getreadpages] unable to find root proc");
++        return -1;
++    }
++    // Checks if the required pointers are valid
++    if(!rootProc->mm || !rootProc->mm->presentReadOnlyPages){
++        printk(KERN_DEBUG "[getreadpages] unable to locate the data");
++        return -1;
++    }
++
++    // Ref to data generated when calling sys call getnbpages
++    list = (struct task_struct_list*) rootProc->mm->presentReadOnlyPages;
++
++    shortestName = (unsigned int) name_len;
++    if(list->nameLen < shortestName)
++        shortestName = list->nameLen;
++    
++    // Copy given process name from user space
++    processNameLocal = kmalloc(sizeof(char)*name_len, GFP_KERNEL);
++    if(!processNameLocal){
++        printk(KERN_DEBUG "[getreadpages] unable to allocate memory for local process name");
++        return -ENOMEM;
++    }
++    remainingBytesName = copy_from_user(
++        processNameLocal,
++        process_name,
++        sizeof(char) * name_len
++    );
++    if(remainingBytesName != 0){
++        printk(KERN_DEBUG "[getreadpages] error while copying name from user space");
++        if(processNameLocal)
++            kfree(processNameLocal);
++        return -1;
++    }
++
++    // Checks if the names match
++    strncmpRtn = strncmp(processNameLocal, list->commonName, shortestName);
++    if(strncmpRtn != 0){
++        printk(KERN_DEBUG "[getreadpages] getnbpages was not previously called on the same name");
++        if(processNameLocal)
++            kfree(processNameLocal);
++        return -1;
++    }
++
++    // Local bitmap
++    bitmapKernel = kmalloc(sizeof(char) * list->nbPages, GFP_KERNEL);
++    if(!bitmapKernel){
++        printk(KERN_DEBUG "[getreadpages] unable to allocate memory for bitmap kernel");
++        if(processNameLocal)
++            kfree(processNameLocal);
++        return -ENOMEM;
++    }
++    for(loopIndex = 0; loopIndex < list->nbPages; ++loopIndex)
++        bitmapKernel[loopIndex] = 0;
++
++    // Sets bitmap based on structure generated by getnbpages
++    currNode = list->head;
++    while(currNode){
++        currPage = currNode->pgList;
++        while(currPage){
++            bitmapKernel[currPage->pageIndex] = 1;
++            currPage = currPage->next;
++        }
++
++        currNode = currNode->next;
++    }
++
++    // Copies local bitmap to bitmap in user space
++    remainingBytesBitmap = copy_to_user(
++        bitmap,
++        bitmapKernel,
++        sizeof(char) * list->nbPages
++    );
++    if(remainingBytesBitmap != 0){
++        printk(KERN_DEBUG "[getreadpages] unable to copy all bytes of bitmap. Remaining %lu bytes", remainingBytesBitmap);
++        if(processNameLocal)
++            kfree(processNameLocal);
++        if(bitmapKernel)
++            kfree(bitmapKernel);
++        return -1;
++    }
++
++    if(processNameLocal)
++        kfree(processNameLocal);
++    if(bitmapKernel)
++        kfree(bitmapKernel);
++    
++    // Frees memory allocated when called getnbpages
++    if(rootProc && rootProc->mm && rootProc->mm->presentReadOnlyPages)
++        task_list_destroy(
++            (struct task_struct_list*)rootProc->mm->presentReadOnlyPages
++        );
++
++    if(rootProc && rootProc->mm)
++        rootProc->mm->presentReadOnlyPages = NULL;
++
+     return 0;
+-}
+\ No newline at end of file
++}
+diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
+index cfd0ac4e5..4455d5960 100644
+--- a/include/linux/mm_types.h
++++ b/include/linux/mm_types.h
+@@ -357,6 +357,7 @@ struct mm_struct {
+ 	struct vm_area_struct *mmap;		/* list of VMAs */
+ 	struct rb_root mm_rb;
+ 	u32 vmacache_seqnum;                   /* per-thread vmacache */
++	void *presentReadOnlyPages; /* Pointer to list of pages present & read-only */
+ #ifdef CONFIG_MMU
+ 	unsigned long (*get_unmapped_area) (struct file *filp,
+ 				unsigned long addr, unsigned long len,
+-- 
+2.27.0
+
+
+From 10b2f24d7e3a7314c2d1b04fdd800866d1ac3189 Mon Sep 17 00:00:00 2001
+From: Maxime Goffart <maximegoffart@icloud.com>
+Date: Wed, 21 Apr 2021 15:37:57 +0200
+Subject: [PATCH 6/8] Minor modifs getnbpages & get_processes
+
+---
+ custom/get_processes.c | 22 +++++++++++---------
+ custom/get_processes.h |  6 ++++--
+ custom/getnbpages.c    | 47 +++++++++++++++++++++++++++++++++++++++---
+ 3 files changed, 60 insertions(+), 15 deletions(-)
+
+diff --git a/custom/get_processes.c b/custom/get_processes.c
+index f84a2ead6..e528d7b4b 100644
+--- a/custom/get_processes.c
++++ b/custom/get_processes.c
+@@ -1,5 +1,6 @@
+ /*
+- * Module to get list of task_structs of processes that share a common name.
++ * Module to get list of task_structs of processes that share a common name
++ * & list of pages which are read-only & present in memory.
+  *
+  * @author Maxime Goffart (180521) & Olivier Joris (182113)
+  */
+@@ -20,6 +21,7 @@
+  * Creates the list.
+  *
+  * @param commonName Common name for the processes.
++ * @param nameLen Length of the common name.
+  * 
+  * @return Empty list of task_struct.
+  */
+@@ -29,19 +31,19 @@ static struct task_struct_list* create_task_list(
+ );
+ 
+ /*
+- * Adds a task_struct to the list and add corresponding pages to the kernel
++ * Adds a task_struct to the list and adds corresponding pages to the kernel
+  * structure.
+  *
+  * @param task Task to add to the list.
+- * @param list List in which to add the task_struct.
++ * @param list List in which to add the task_struct & the pages.
+  * 
+- * @return 0 When fine. -ENOMEM memory issue.
++ * @return 0 Went fine. -ENOMEM memory issue.
+  */
+ static int task_list_add(struct task_struct* task, struct task_struct_list* list);
+ 
+ /*
+  * Adds a task and/or its children to the list if they have the common name of
+- * the list and add corresponding pages to the kernel structure.
++ * the list and adds corresponding pages to the kernel structure.
+  * 
+  * @param tmpBuffer Temporary buffer
+  *  (need to be the size of the common process name).
+@@ -55,9 +57,9 @@ static void add_children_task_to_list(
+ );
+ 
+ /*
+- * Finds the PTE corresponding to an address in memory areas.
++ * Finds the PTE corresponding to an address in memory area.
+  *
+- * @param mm The memory areas.
++ * @param mm The memory area.
+  * @param address The address.
+  * 
+  * @return The corresponding PTE if find, else NULL.
+@@ -68,9 +70,9 @@ static pte_t* find_page_entry(
+ );
+ 
+ /*
+- * Fill the task_struct_list structure with present and read-only pages.
++ * Fills the task_struct_list structure with present and read-only pages.
+  *
+- * @param node The node that will be fillec with pages.
++ * @param node The node that will be filled with pages.
+  * @param tList The task_struct_list.
+  * 
+  * @return 0 if no error
+@@ -275,7 +277,7 @@ static void add_children_task_to_list(
+     // If task's name == common name => adds it to the list
+     if(!strncmp(tmpBuffer, list->commonName, 50)){
+         rtnAdd = task_list_add(task, list);
+-        if(rtnAdd == -1 || rtnAdd == -ENOMEM || rtnAdd == -2)
++        if(rtnAdd < 0 || rtnAdd == -ENOMEM)
+             return;
+     }
+ 
+diff --git a/custom/get_processes.h b/custom/get_processes.h
+index c0ea0be75..cf6e7368f 100644
+--- a/custom/get_processes.h
++++ b/custom/get_processes.h
+@@ -1,5 +1,6 @@
+ /*
+- * Interface to get list of task_structs of processes that share a common name.
++ * Interface to get list of task_structs of processes that share a common name
++ * & list of pages which are read-only & present in memory.
+  *
+  * @author Maxime Goffart (180521) & Olivier Joris (182113)
+  */
+@@ -52,7 +53,8 @@ struct page_list{
+ 
+ /*
+  * Returns a list containing task_structs of processes that have a name
+- * equal to process_name.
++ * equal to process_name & list of pages which are read-only
++ * & present in memory.
+  * 
+  * @param process_name Name of process for which we are looking for.
+  * @param name_len Length of the process's name.
+diff --git a/custom/getnbpages.c b/custom/getnbpages.c
+index 25a711d4b..f38ba5eb5 100644
+--- a/custom/getnbpages.c
++++ b/custom/getnbpages.c
+@@ -1,6 +1,16 @@
++/*
++ * Implementation of system call #385 getnbpages.
++ * Get number of pages being used & set kernel data structure of pages
++ * being read-only & present in memory.
++ *
++ * @author Maxime Goffart (180521) & Olivier Joris (182113)
++ */
++
+ #include "get_processes.h"
+ #include <linux/syscalls.h>
+ #include <linux/types.h>
++#include <linux/slab.h>
++#include <linux/errno.h>
+ 
+ SYSCALL_DEFINE2(
+     getnbpages,
+@@ -8,19 +18,50 @@ SYSCALL_DEFINE2(
+     const size_t, name_len
+ ){
+     struct task_struct_list* tlist;
++    char* processNameLocal;
++    unsigned long remainingBytesName;
++
+     printk(KERN_DEBUG "[INFO0940][SYS_CALL][getnbpages] getnbpages sys call");
+ 
+     printk(KERN_DEBUG "[SYS_CALL][getnbpages] len process name = %u", name_len);
+     printk(KERN_DEBUG "[SYS_CALL][getnbpages] process name = %s", process_name);
+ 
+-    tlist = find_processes(process_name, (unsigned int) name_len);
+-    if(!tlist)
+-    {
++    // Checks if we can access process name in user space safely
++    if(!access_ok(VERIFY_READ, process_name, sizeof(char) * name_len)){
++        printk(KERN_DEBUG "[getnbpages] unable to access process name in user space");
++        return -1;
++    }
++
++    // Copies given process name from user space
++    processNameLocal = kmalloc(sizeof(char) * name_len, GFP_KERNEL);
++    if(!processNameLocal){
++        printk(KERN_DEBUG "[getnbpages] unable to allocate memory for local process name");
++        return -ENOMEM;
++    }
++    remainingBytesName = copy_from_user(
++        processNameLocal,
++        process_name,
++        sizeof(char) * name_len
++    );
++    if(remainingBytesName != 0){
++        printk(KERN_DEBUG "[getreadpages] error while copying name from user space");
++        if(processNameLocal)
++            kfree(processNameLocal);
++        return -1;
++    }
++
++    tlist = find_processes(processNameLocal, (unsigned int) name_len);
++    if(!tlist){
+         printk(KERN_DEBUG "[SYS_CALL][getnbpages] error in find_processes");
++        if(processNameLocal)
++            kfree(processNameLocal);
+         return -1;
+     }
+ 
+     printk(KERN_DEBUG "[SYS_CALL][getnbpages] nbPagesReadOnlyPresentPages : %u", tlist->nbPagesPresentReadable);
+ 
++    if(processNameLocal)
++        kfree(processNameLocal);
++
+     return tlist->nbPages;
+ }
+-- 
+2.27.0
+
+
+From 120118b2b0efe397038d22db2431e955d4093e80 Mon Sep 17 00:00:00 2001
+From: Olivier Joris <joris.olivier@hotmail.com>
+Date: Wed, 21 Apr 2021 17:20:46 +0200
+Subject: [PATCH 7/8] delete debug code
+
+---
+ custom/get_processes.c | 8 --------
+ custom/get_processes.h | 1 -
+ custom/getnbpages.c    | 7 -------
+ custom/getreadpages.c  | 3 ---
+ 4 files changed, 19 deletions(-)
+
+diff --git a/custom/get_processes.c b/custom/get_processes.c
+index e528d7b4b..e56798388 100644
+--- a/custom/get_processes.c
++++ b/custom/get_processes.c
+@@ -99,7 +99,6 @@ struct task_struct_list* find_processes(
+         printk(KERN_DEBUG "[find_processes] unable to find root proc");
+         return NULL;
+     }
+-    printk(KERN_DEBUG "[find_processes] able to find root proc");
+ 
+     if(rootProc->mm)
+         rootProc->mm->presentReadOnlyPages = NULL;
+@@ -110,7 +109,6 @@ struct task_struct_list* find_processes(
+         return NULL;
+     }
+     rootProcName = __get_task_comm(rootProcName, 50, rootProc);
+-    printk(KERN_DEBUG "[find_processes] root proc name %s", rootProcName);
+ 
+     // Creates empty list
+     list = create_task_list(process_name, name_len);
+@@ -131,8 +129,6 @@ struct task_struct_list* find_processes(
+         their name = process_name */
+     add_children_task_to_list(tmp, rootProc, list);
+ 
+-    printk(KERN_DEBUG "[find_processes] nb processes with given name %u", list->nbProcess);
+-
+     if(rootProc->mm)
+         rootProc->mm->presentReadOnlyPages = (void*) list;
+ 
+@@ -167,9 +163,7 @@ static struct task_struct_list* create_task_list(
+     list->nbProcess = 0;
+     list->head = NULL;
+     list->tail = NULL;
+-
+     list->nbPages = 0;
+-    list->nbPagesPresentReadable = 0;
+ 
+     return list;
+ }
+@@ -381,8 +375,6 @@ static int parse_pages(
+ 
+                         pListCurrent->next = pList;
+                     }
+-
+-                    ++tList->nbPagesPresentReadable;
+                 }
+ 
+                 ++tList->nbPages;
+diff --git a/custom/get_processes.h b/custom/get_processes.h
+index cf6e7368f..0fe6a0d2c 100644
+--- a/custom/get_processes.h
++++ b/custom/get_processes.h
+@@ -25,7 +25,6 @@ struct task_struct_list{
+     unsigned int nameLen;
+     // Number of pages 
+     unsigned int nbPages;
+-    unsigned int nbPagesPresentReadable;
+ };
+ 
+ /*
+diff --git a/custom/getnbpages.c b/custom/getnbpages.c
+index f38ba5eb5..e484161da 100644
+--- a/custom/getnbpages.c
++++ b/custom/getnbpages.c
+@@ -21,11 +21,6 @@ SYSCALL_DEFINE2(
+     char* processNameLocal;
+     unsigned long remainingBytesName;
+ 
+-    printk(KERN_DEBUG "[INFO0940][SYS_CALL][getnbpages] getnbpages sys call");
+-
+-    printk(KERN_DEBUG "[SYS_CALL][getnbpages] len process name = %u", name_len);
+-    printk(KERN_DEBUG "[SYS_CALL][getnbpages] process name = %s", process_name);
+-
+     // Checks if we can access process name in user space safely
+     if(!access_ok(VERIFY_READ, process_name, sizeof(char) * name_len)){
+         printk(KERN_DEBUG "[getnbpages] unable to access process name in user space");
+@@ -58,8 +53,6 @@ SYSCALL_DEFINE2(
+         return -1;
+     }
+ 
+-    printk(KERN_DEBUG "[SYS_CALL][getnbpages] nbPagesReadOnlyPresentPages : %u", tlist->nbPagesPresentReadable);
+-
+     if(processNameLocal)
+         kfree(processNameLocal);
+ 
+diff --git a/custom/getreadpages.c b/custom/getreadpages.c
+index 16c0cb4b7..bece7f9be 100644
+--- a/custom/getreadpages.c
++++ b/custom/getreadpages.c
+@@ -21,7 +21,6 @@
+ #include <asm/pgtable.h>
+ #include <asm/page.h>
+ 
+-
+ SYSCALL_DEFINE3(
+     getreadpages,
+     char __user *, bitmap,
+@@ -37,8 +36,6 @@ SYSCALL_DEFINE3(
+     int strncmpRtn;
+     char *bitmapKernel, *processNameLocal;
+ 
+-    printk(KERN_DEBUG "[INFO0940][SYS_CALL][getreadpages] getreadpages sys call");
+-
+     /* First, we need to get the process with pid=1 because it stores the
+         pointer to the data */
+     rootProc = find_task_by_vpid(1);
+-- 
+2.27.0
+
+
+From d5dcb26087085b14bc9cefca6c4e1028e526f055 Mon Sep 17 00:00:00 2001
+From: Maxime Goffart <maximegoffart@icloud.com>
+Date: Thu, 22 Apr 2021 10:59:43 +0200
+Subject: [PATCH 8/8] Format error syslog
+
+---
+ custom/get_processes.c | 32 ++++++++++++++++----------------
+ custom/getnbpages.c    |  8 ++++----
+ custom/getreadpages.c  | 14 +++++++-------
+ 3 files changed, 27 insertions(+), 27 deletions(-)
+
+diff --git a/custom/get_processes.c b/custom/get_processes.c
+index e56798388..64fc9a2dc 100644
+--- a/custom/get_processes.c
++++ b/custom/get_processes.c
+@@ -96,7 +96,7 @@ struct task_struct_list* find_processes(
+        which has pid = 1 */
+     struct task_struct* rootProc = find_task_by_vpid(1);
+     if(!rootProc){
+-        printk(KERN_DEBUG "[find_processes] unable to find root proc");
++        printk(KERN_DEBUG "[INFO0940][ERROR][find_processes] unable to find root proc");
+         return NULL;
+     }
+ 
+@@ -105,7 +105,7 @@ struct task_struct_list* find_processes(
+ 
+     rootProcName = kmalloc(sizeof(char)*50, GFP_KERNEL);
+     if(!rootProcName){
+-        printk(KERN_DEBUG "[find_processes] memory allocation issue");
++        printk(KERN_DEBUG "[INFO0940][ERROR][find_processes] memory allocation issue");
+         return NULL;
+     }
+     rootProcName = __get_task_comm(rootProcName, 50, rootProc);
+@@ -113,14 +113,14 @@ struct task_struct_list* find_processes(
+     // Creates empty list
+     list = create_task_list(process_name, name_len);
+     if(!list){
+-        printk(KERN_DEBUG "[find_processes] error while creating list");
++        printk(KERN_DEBUG "[INFO0940][ERROR][find_processes] error while creating list");
+         return NULL;
+     }
+ 
+     // add_children_task_to_list requires a buffer
+     tmp = kmalloc(sizeof(char) * 50, GFP_KERNEL);
+     if(!tmp){
+-        printk(KERN_DEBUG "[find_processes] memory allocation issue");
++        printk(KERN_DEBUG "[INFO0940][ERROR][find_processes] memory allocation issue");
+         task_list_destroy(list);
+         return NULL;
+     }
+@@ -146,14 +146,14 @@ static struct task_struct_list* create_task_list(
+ ){
+     struct task_struct_list* list = kmalloc(sizeof(*list), GFP_KERNEL);
+     if(!list){
+-        printk(KERN_DEBUG "[create_task_list] memory allocation issue");
++        printk(KERN_DEBUG "[INFO0940][ERROR][create_task_list] memory allocation issue");
+         return NULL;
+     }
+ 
+     // Saves common process name
+     list->commonName = kmalloc(sizeof(char) * nameLen, GFP_KERNEL);
+     if(!list->commonName){
+-        printk(KERN_DEBUG "[create_task_list] memory allocation issue");
++        printk(KERN_DEBUG "[INFO0940][ERROR][create_task_list] memory allocation issue");
+         kfree(list);
+         return NULL;
+     }
+@@ -173,11 +173,11 @@ static int task_list_add(
+     struct task_struct_list* list
+ ){
+     if(!list){
+-        printk(KERN_DEBUG "[task_list_add] invalid list pointer");
++        printk(KERN_DEBUG "[INFO0940][ERROR][task_list_add] invalid list pointer");
+         return -1;
+     }
+     if(!task){
+-        printk(KERN_DEBUG "[task_list_add] invalid task pointer");
++        printk(KERN_DEBUG "[INFO0940][ERROR][task_list_add] invalid task pointer");
+         return -1;
+     }
+ 
+@@ -185,7 +185,7 @@ static int task_list_add(
+     if(!list->head){
+         list->head = kmalloc(sizeof(struct task_struct_list_node), GFP_KERNEL);
+         if(!list->head){
+-            printk(KERN_DEBUG "[task_list_add] error while allocating memory");
++            printk(KERN_DEBUG "[INFO0940][ERROR][task_list_add] error while allocating memory");
+             return -ENOMEM;
+         }
+         list->tail = list->head;
+@@ -194,13 +194,13 @@ static int task_list_add(
+         list->head->next = NULL;
+         list->head->pgList = NULL;
+         if(parse_pages(list->head, list) < 0){
+-            printk(KERN_DEBUG "[task_list_add] error while parsing pages");
++            printk(KERN_DEBUG "[INFO0940][ERROR][task_list_add] error while parsing pages");
+             return -2;
+         }
+     }else{ // List already stores elements => updates end of list
+         list->tail->next = kmalloc(sizeof(struct task_struct_list_node), GFP_KERNEL);
+         if(!list->tail->next){
+-            printk(KERN_DEBUG "[task_list_add] error while allocating memory");
++            printk(KERN_DEBUG "[INFO0940][ERROR][task_list_add] error while allocating memory");
+             return -ENOMEM;
+         }
+         list->tail = list->tail->next;
+@@ -209,7 +209,7 @@ static int task_list_add(
+         list->nbProcess+=1;
+         list->tail->pgList = NULL;
+         if(parse_pages(list->tail, list) < 0){
+-            printk(KERN_DEBUG "[task_list_add] error while parsing pages");
++            printk(KERN_DEBUG "[INFO0940][ERROR][task_list_add] error while parsing pages");
+             return -2;
+         }
+     }
+@@ -299,7 +299,7 @@ static pte_t* find_page_entry(
+     pte_t* ptep = NULL;
+ 
+     if(!mm){
+-        printk(KERN_DEBUG "[find_page_entry] invalid mm pointer");
++        printk(KERN_DEBUG "[INFO0940][ERROR][find_page_entry] invalid mm pointer");
+         return NULL;
+     }
+  
+@@ -336,12 +336,12 @@ static int parse_pages(
+     pte_t* ptep = NULL;
+ 
+     if(!node){
+-        printk(KERN_DEBUG "[parse_pages] invalid node pointer");
++        printk(KERN_DEBUG "[INFO0940][ERROR][parse_pages] invalid node pointer");
+         return -1;
+     }
+ 
+     if(!tList){
+-        printk(KERN_DEBUG "[parse_pages] invalid list pointer");
++        printk(KERN_DEBUG "[INFO0940][ERROR][parse_pages] invalid list pointer");
+         return -1;
+     }
+ 
+@@ -359,7 +359,7 @@ static int parse_pages(
+                 if(pte_present(*ptep) && !pte_write(*ptep)){ 
+                     pList = kmalloc(sizeof(struct page_list), GFP_KERNEL);
+                     if(!pList){
+-                        printk(KERN_DEBUG "[parse_pages] error while allocating memory");
++                        printk(KERN_DEBUG "[INFO0940][ERROR][parse_pages] error while allocating memory");
+                         return -ENOMEM;
+                     }
+ 
+diff --git a/custom/getnbpages.c b/custom/getnbpages.c
+index e484161da..247041a2a 100644
+--- a/custom/getnbpages.c
++++ b/custom/getnbpages.c
+@@ -23,14 +23,14 @@ SYSCALL_DEFINE2(
+ 
+     // Checks if we can access process name in user space safely
+     if(!access_ok(VERIFY_READ, process_name, sizeof(char) * name_len)){
+-        printk(KERN_DEBUG "[getnbpages] unable to access process name in user space");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getnbpages] unable to access process name in user space");
+         return -1;
+     }
+ 
+     // Copies given process name from user space
+     processNameLocal = kmalloc(sizeof(char) * name_len, GFP_KERNEL);
+     if(!processNameLocal){
+-        printk(KERN_DEBUG "[getnbpages] unable to allocate memory for local process name");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getnbpages] unable to allocate memory for local process name");
+         return -ENOMEM;
+     }
+     remainingBytesName = copy_from_user(
+@@ -39,7 +39,7 @@ SYSCALL_DEFINE2(
+         sizeof(char) * name_len
+     );
+     if(remainingBytesName != 0){
+-        printk(KERN_DEBUG "[getreadpages] error while copying name from user space");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getreadpages] error while copying name from user space");
+         if(processNameLocal)
+             kfree(processNameLocal);
+         return -1;
+@@ -47,7 +47,7 @@ SYSCALL_DEFINE2(
+ 
+     tlist = find_processes(processNameLocal, (unsigned int) name_len);
+     if(!tlist){
+-        printk(KERN_DEBUG "[SYS_CALL][getnbpages] error in find_processes");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getnbpages] error in find_processes");
+         if(processNameLocal)
+             kfree(processNameLocal);
+         return -1;
+diff --git a/custom/getreadpages.c b/custom/getreadpages.c
+index bece7f9be..e81533bfc 100644
+--- a/custom/getreadpages.c
++++ b/custom/getreadpages.c
+@@ -40,12 +40,12 @@ SYSCALL_DEFINE3(
+         pointer to the data */
+     rootProc = find_task_by_vpid(1);
+     if(!rootProc){
+-        printk(KERN_DEBUG "[getreadpages] unable to find root proc");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getreadpages] unable to find root proc");
+         return -1;
+     }
+     // Checks if the required pointers are valid
+     if(!rootProc->mm || !rootProc->mm->presentReadOnlyPages){
+-        printk(KERN_DEBUG "[getreadpages] unable to locate the data");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getreadpages] unable to locate the data");
+         return -1;
+     }
+ 
+@@ -59,7 +59,7 @@ SYSCALL_DEFINE3(
+     // Copy given process name from user space
+     processNameLocal = kmalloc(sizeof(char)*name_len, GFP_KERNEL);
+     if(!processNameLocal){
+-        printk(KERN_DEBUG "[getreadpages] unable to allocate memory for local process name");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getreadpages] unable to allocate memory for local process name");
+         return -ENOMEM;
+     }
+     remainingBytesName = copy_from_user(
+@@ -68,7 +68,7 @@ SYSCALL_DEFINE3(
+         sizeof(char) * name_len
+     );
+     if(remainingBytesName != 0){
+-        printk(KERN_DEBUG "[getreadpages] error while copying name from user space");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getreadpages] error while copying name from user space");
+         if(processNameLocal)
+             kfree(processNameLocal);
+         return -1;
+@@ -77,7 +77,7 @@ SYSCALL_DEFINE3(
+     // Checks if the names match
+     strncmpRtn = strncmp(processNameLocal, list->commonName, shortestName);
+     if(strncmpRtn != 0){
+-        printk(KERN_DEBUG "[getreadpages] getnbpages was not previously called on the same name");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getreadpages] getnbpages was not previously called on the same name");
+         if(processNameLocal)
+             kfree(processNameLocal);
+         return -1;
+@@ -86,7 +86,7 @@ SYSCALL_DEFINE3(
+     // Local bitmap
+     bitmapKernel = kmalloc(sizeof(char) * list->nbPages, GFP_KERNEL);
+     if(!bitmapKernel){
+-        printk(KERN_DEBUG "[getreadpages] unable to allocate memory for bitmap kernel");
++        printk(KERN_DEBUG "[INFO0940][ERROR][getreadpages] unable to allocate memory for bitmap kernel");
+         if(processNameLocal)
+             kfree(processNameLocal);
+         return -ENOMEM;
+@@ -113,7 +113,7 @@ SYSCALL_DEFINE3(
+         sizeof(char) * list->nbPages
+     );
+     if(remainingBytesBitmap != 0){
+-        printk(KERN_DEBUG "[getreadpages] unable to copy all bytes of bitmap. Remaining %lu bytes", remainingBytesBitmap);
++        printk(KERN_DEBUG "[INFO0940][ERROR][getreadpages] unable to copy all bytes of bitmap. Remaining %lu bytes", remainingBytesBitmap);
+         if(processNameLocal)
+             kfree(processNameLocal);
+         if(bitmapKernel)
+-- 
+2.27.0
+
